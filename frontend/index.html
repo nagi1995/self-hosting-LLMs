@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Ollama Chat</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f5f5f5;
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    #chatWindow {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+    }
+    .message {
+      max-width: 80%;
+      margin: 5px;
+      padding: 10px;
+      border-radius: 8px;
+    }
+    .message.user {
+      background: #007bff;
+      color: white;
+      align-self: flex-end;
+    }
+    .message.bot {
+      background: #f1f1f1;
+      color: #222;
+      align-self: flex-start;
+      white-space: pre-wrap; /* ✅ Preserve line breaks automatically */
+    }
+    #inputArea {
+      display: flex;
+      padding: 10px;
+      background: #fff;
+      border-top: 1px solid #ccc;
+    }
+    #promptInput {
+      flex: 1;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    button {
+      margin-left: 10px;
+      padding: 10px 20px;
+      border: none;
+      background: #007bff;
+      color: white;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #0056b3;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="chatWindow"></div>
+
+  <div id="inputArea">
+    <input type="text" id="promptInput" placeholder="Type your message here..." />
+    <button onclick="sendPrompt()">Send</button>
+  </div>
+
+  <!-- ✅ DOMPurify from CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+
+  <script>
+    function markdownToHTML(text) {
+      return text
+        .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>") // bold
+        .replace(/\*(.*?)\*/g, "<em>$1</em>")             // italics
+        .replace(/`(.*?)`/g, "<code>$1</code>")          // inline code
+        .replace(/\n\n/g, "</p><p>")                     // double newlines = paragraphs
+        .replace(/\n/g, "<br>")                          // single newlines = line breaks
+        .replace(/^/, "<p>")                             // wrap start in paragraph
+        .replace(/$/, "</p>");                           // wrap end in paragraph
+    }
+
+    function sendPrompt() {
+      const promptInput = document.getElementById("promptInput");
+      const chatWindow = document.getElementById("chatWindow");
+      const prompt = promptInput.value.trim();
+      if (!prompt) return;
+
+      // Add user message
+      addMessage(prompt, "user");
+
+      // Create bot message placeholder
+      const botMessage = document.createElement("div");
+      botMessage.className = "message bot";
+      chatWindow.appendChild(botMessage);
+      chatWindow.scrollTop = chatWindow.scrollHeight;
+
+      // const source = new EventSource(`http://backend:9000/chat?prompt=${encodeURIComponent(prompt)}`);
+      const source = new EventSource(`http://localhost:9000/chat?prompt=${encodeURIComponent(prompt)}`);
+      let accumulatedText = "";
+
+      source.onmessage = function (event) {
+        // ✅ Unescape newlines
+        const unescapedData = event.data.replace(/\\n/g, '\n');
+        accumulatedText += unescapedData;
+
+        const formatted = markdownToHTML(accumulatedText);
+        const safeHTML = DOMPurify.sanitize(formatted);
+
+        botMessage.innerHTML = safeHTML;
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+      };
+
+      source.onerror = function () {
+        source.close();
+      };
+
+      promptInput.value = "";
+    }
+
+    function addMessage(text, role) {
+      const chatWindow = document.getElementById("chatWindow");
+      const message = document.createElement("div");
+      message.className = `message ${role}`;
+      message.textContent = text;
+      chatWindow.appendChild(message);
+      chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+  </script>
+</body>
+</html>
