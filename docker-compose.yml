@@ -22,11 +22,5 @@ services:
       - ollama
     restart: unless-stopped
 
-  frontend:
-    build: ./frontend
-    ports:
-      - "8080:80"
-    restart: unless-stopped
-
 volumes:
   ollama_models:

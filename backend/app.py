@@ -25,17 +25,18 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 sessions = {}
 
 @app.get("/health")
-def health_check():
+async def health_check():
     try:
-        response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=2)
-        if response.status_code == 200:
-            return {"status": "ok", "ollama": "available"}
-        else:
-            return JSONResponse(
-                status_code=503,
-                content={"status": "error", "ollama": "unreachable"}
-            )
-    except requests.exceptions.RequestException:
+        async with httpx.AsyncClient(timeout=2) as client:
+            response = await client.get(f"{OLLAMA_URL}/api/tags")
+            if response.status_code == 200:
+                return {"status": "ok", "ollama": "available"}
+            else:
+                return JSONResponse(
+                    status_code=503,
+                    content={"status": "error", "ollama": "unreachable"}
+                )
+    except httpx.RequestError:
         return JSONResponse(
             status_code=503,
             content={"status": "error", "ollama": "unreachable"}
@@ -101,7 +102,7 @@ async def chat(
 
 async def pull_model(model_name: str) -> dict:
     async with httpx.AsyncClient(timeout=None) as client:
-        for attempt in range(1):
+        for attempt in range(10):
             try:
                 print(f"📥 Pulling model attempt {attempt+1} for {model_name}")
                 resp = await client.post(f"{OLLAMA_URL}/api/pull", json={"name": model_name})
@@ -110,7 +111,7 @@ async def pull_model(model_name: str) -> dict:
                 print(f"❌ Exception during model pull: {e}")
 
             # Wait before checking
-            await asyncio.sleep(600)
+            await asyncio.sleep(60)
 
             try:
                 resp_tags = await client.get(f"{OLLAMA_URL}/api/tags")
@@ -135,35 +136,39 @@ async def download_model(request: Request):
     result = await pull_model(model_name)
     return result
 
-
 @app.get("/models/list")
-def list_models():
+async def list_models():
     try:
-        response = requests.get(f"{OLLAMA_URL}/api/tags")
-        if response.status_code == 200:
-            data = response.json()
-            return {"status": "ok", "models": data.get("models", [])}
-        else:
-            return JSONResponse(status_code=503, content={"error": "Unable to fetch models"})
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{OLLAMA_URL}/api/tags")
+            if response.status_code == 200:
+                data = response.json()
+                return {"status": "ok", "models": data.get("models", [])}
+            else:
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": "Unable to fetch models"}
+                )
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.delete("/models/delete")
-def delete_models(body: dict = Body(...)):
+async def delete_models(body: dict = Body(...)):
     models = body.get("models", [])
     if not models:
         return {"status": "error", "detail": "No models provided"}
 
     deleted = []
     errors = []
-    for model_name in models:
-        try:
-            resp = requests.delete(f"{OLLAMA_URL}/api/delete", json={"name": model_name})
-            if resp.status_code == 200:
-                deleted.append(model_name)
-            else:
-                errors.append({"model": model_name, "error": resp.text})
-        except Exception as e:
-            errors.append({"model": model_name, "error": str(e)})
+    async with httpx.AsyncClient() as client:
+        for model_name in models:
+            try:
+                resp = await client.delete(f"{OLLAMA_URL}/api/delete", json={"name": model_name})
+                if resp.status_code == 200:
+                    deleted.append(model_name)
+                else:
+                    errors.append({"model": model_name, "error": resp.text})
+            except Exception as e:
+                errors.append({"model": model_name, "error": str(e)})
 
     return {"status": "ok", "deleted": deleted, "errors": errors}

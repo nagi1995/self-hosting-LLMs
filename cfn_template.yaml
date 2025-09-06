@@ -1,0 +1,262 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Dev/test stack for Ollama (EC2) + Backend (Fargate) in ap-south-1.
+  Ollama uses fixed private IP, BE connects via that private IP.
+  Provide MyIp and EcrRepoName at deploy.
+
+Parameters:
+  MyIp:
+    Type: String
+    Description: "Your public IP in CIDR format (e.g. 203.0.113.25/32). Required at deploy."
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: "VPC ID"
+    Default: "vpc-xxx"  # Replace with your VPC ID
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: "List of 3 public subnet IDs"
+    Default: "subnet-aaa,subnet-bbb,subnet-ccc" # Replace with your subnets
+
+  EcrRepoName:
+    Type: String
+    Description: "Name of existing ECR repository containing backend image"
+    Default: "be-image" # give you backend image name here
+
+Resources:
+
+  #### Security Groups
+  BackendSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow access to BE (port 9000) only from MyIp"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 9000
+          ToPort: 9000
+          CidrIp: !Ref MyIp
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  OllamaSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow BE to talk to Ollama on 11434"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 11434
+          ToPort: 11434
+          SourceSecurityGroupId: !Ref BackendSG
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  #### ECS Clusters
+  BackendCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "be-cluster-${AWS::StackName}"
+
+  OllamaCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "ollama-cluster-${AWS::StackName}"
+
+  #### IAM Roles
+  FargateExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "be-fargate-exec-role-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  FargateTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "be-fargate-task-role-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  Ec2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "ollama-ec2-role-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref Ec2InstanceRole]
+
+  #### CloudWatch Log Group for Backend
+  BackendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/be-${AWS::StackName}"
+      RetentionInDays: 1
+
+  #### Backend Fargate Task Definition
+  BackendTaskDef:
+    Type: AWS::ECS::TaskDefinition
+    DependsOn: 
+      - OllamaENI   # ensures Ollama ENI is created before the BE task
+      - BackendLogGroup
+    Properties:
+      Family: !Sub "be-task-${AWS::StackName}"
+      Cpu: "512"
+      Memory: "1024"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt FargateExecutionRole.Arn
+      TaskRoleArn: !Ref FargateTaskRole
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ContainerDefinitions:
+        - Name: be-container
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrRepoName}:latest"
+          Essential: true
+          PortMappings:
+            - ContainerPort: 9000
+              Protocol: tcp
+          Environment:
+            - Name: OLLAMA_URL
+              Value: !Sub "http://${OllamaENI.PrimaryPrivateIpAddress}:11434"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref BackendLogGroup
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: ecs
+
+  #### Backend ECS Service (Fargate)
+  BackendService:
+    Type: AWS::ECS::Service
+    DependsOn: BackendTaskDef
+    Properties:
+      Cluster: !Ref BackendCluster
+      DesiredCount: 1
+      LaunchType: FARGATE
+      TaskDefinition: !Ref BackendTaskDef
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref SubnetIds
+          SecurityGroups:
+            - !Ref BackendSG
+
+  #### Ollama ENI with auto private IP
+  OllamaENI:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Select [0, !Ref SubnetIds]
+      Description: "ENI for Ollama instance (private-only)"
+      GroupSet:
+        - !Ref OllamaSG
+      Tags:
+        - Key: Name
+          Value: !Sub "ollama-eni-${AWS::StackName}"
+
+  #### Ollama EC2 instance
+  OllamaInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: OllamaENI
+    Properties:
+      InstanceType: c6i.large
+      IamInstanceProfile: !Ref Ec2InstanceProfile
+      ImageId: ami-099e6eee4720726e1   # replace with latest Amazon Linux 2 AMI in your region
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref OllamaENI
+          DeviceIndex: 0
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Sub "ollama-instance-${AWS::StackName}"
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          # Register ECS cluster
+          echo "ECS_CLUSTER=${OllamaCluster}" >> /etc/ecs/ecs.config
+
+          # Update system
+          yum update -y
+
+          # Install Docker robustly
+          amazon-linux-extras enable docker
+          yum install -y docker jq
+          systemctl enable docker
+          systemctl start docker
+
+          # Wait for Docker to be fully running
+          until docker info > /dev/null 2>&1; do
+            echo "Waiting for Docker to start..."
+            sleep 3
+          done
+
+          # Prepare Ollama directory
+          mkdir -p /var/lib/ollama
+          chown -R ec2-user:ec2-user /var/lib/ollama
+
+          # Pull Ollama image and run container
+          docker pull ollama/ollama:latest
+          docker rm -f ollama || true
+          docker run -d --name ollama \
+            -p 11434:11434 \
+            -e OLLAMA_NUM_PARALLEL=4 \
+            -e OLLAMA_MAX_LOADED_MODELS=2 \
+            -v /var/lib/ollama:/root/.ollama \
+            ollama/ollama:latest
+
+          # Verify container is running
+          docker ps
+
+Outputs:
+  BackendServiceName:
+    Description: "ECS Backend service (Fargate)"
+    Value: !Ref BackendService
+
+  BackendSecurityGroup:
+    Description: "Backend Security Group ID (restricts 9000 to your IP)"
+    Value: !Ref BackendSG
+
+  OllamaSecurityGroup:
+    Description: "Ollama Security Group ID"
+    Value: !Ref OllamaSG
+
+  OllamaInstanceId:
+    Description: "EC2 Instance ID running Ollama"
+    Value: !Ref OllamaInstance
+
+
+
