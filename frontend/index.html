@@ -13,6 +13,14 @@
       display: flex;
       flex-direction: column;
     }
+    #topBar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px;
+      background: #fff;
+      border-bottom: 1px solid #ccc;
+    }
     #chatWindow {
       flex: 1;
       overflow-y: auto;
@@ -35,7 +43,7 @@
       background: #f1f1f1;
       color: #222;
       align-self: flex-start;
-      white-space: pre-wrap; /* ✅ Preserve line breaks automatically */
+      white-space: pre-wrap;
     }
     #inputArea {
       display: flex;
@@ -49,75 +57,218 @@
       border: 1px solid #ccc;
       border-radius: 4px;
     }
-    button {
-      margin-left: 10px;
-      padding: 10px 20px;
-      border: none;
+    button, select {
+      padding: 8px 12px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
       background: #007bff;
       color: white;
-      border-radius: 4px;
       cursor: pointer;
     }
     button:hover {
       background: #0056b3;
     }
+    select {
+      background: #fff;
+      color: #222;
+      border: 1px solid #ccc;
+    }
+    /* ✅ Modal styles */
+    #modalOverlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: rgba(0,0,0,0.6);
+      justify-content: center;
+      align-items: center;
+    }
+    #modalBox {
+      background: #fff;
+      padding: 20px;
+      border-radius: 8px;
+      max-width: 400px;
+      width: 90%;
+    }
+    #modalBox h3 {
+      margin-top: 0;
+    }
+    #modalBox ul {
+      list-style: none;
+      padding: 0;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    #modalBox li {
+      margin: 5px 0;
+    }
+    #modalBox button {
+      margin-top: 10px;
+    }
   </style>
 </head>
 <body>
 
+  <!-- ✅ Top bar with model controls -->
+  <div id="topBar">
+    <label for="modelDropdown">Model:</label>
+    <select id="modelDropdown"></select>
+    <button id="refreshModels">🔄 Refresh</button>
+    <button id="downloadModel">⬇️ Download</button>
+    <button id="deleteModels">🗑️ Delete</button>
+  </div>
+
+  <!-- ✅ Chat window -->
   <div id="chatWindow"></div>
 
+  <!-- ✅ Input area -->
   <div id="inputArea">
     <input type="text" id="promptInput" placeholder="Type your message here..." />
     <button onclick="sendPrompt()">Send</button>
   </div>
 
-  <!-- ✅ DOMPurify from CDN -->
+  <!-- ✅ Modal for delete confirmation -->
+  <div id="modalOverlay">
+    <div id="modalBox">
+      <h3>Select models to delete</h3>
+      <ul id="modelList"></ul>
+      <button id="confirmDelete">Confirm Delete</button>
+      <button id="cancelDelete">Cancel</button>
+    </div>
+  </div>
+
+  <!-- ✅ DOMPurify + Marked.js -->
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
   <script>
-    function markdownToHTML(text) {
-      return text
-        .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>") // bold
-        .replace(/\*(.*?)\*/g, "<em>$1</em>")             // italics
-        .replace(/`(.*?)`/g, "<code>$1</code>")          // inline code
-        .replace(/\n\n/g, "</p><p>")                     // double newlines = paragraphs
-        .replace(/\n/g, "<br>")                          // single newlines = line breaks
-        .replace(/^/, "<p>")                             // wrap start in paragraph
-        .replace(/$/, "</p>");                           // wrap end in paragraph
+    const API_BASE = "http://localhost:9000";  // change here if needed
+    const sessionId = crypto.randomUUID();
+    let currentModel = "llama3"; // default
+    let modelsCache = []; // store latest models list
+
+    // ✅ Load available models into dropdown
+    async function loadModels() {
+      try {
+        const res = await fetch(`${API_BASE}/models/list`);
+        const data = await res.json();
+        const dropdown = document.getElementById("modelDropdown");
+        dropdown.innerHTML = "";
+        modelsCache = data.models || [];
+
+        if (modelsCache.length > 0) {
+          modelsCache.forEach(m => {
+            const opt = document.createElement("option");
+            opt.value = m.name;
+            opt.textContent = m.name;
+            dropdown.appendChild(opt);
+          });
+          currentModel = modelsCache[0].name;
+        } else {
+          const opt = document.createElement("option");
+          opt.textContent = "No models available";
+          dropdown.appendChild(opt);
+        }
+      } catch (err) {
+        console.error("Error loading models:", err);
+      }
     }
 
+    // ✅ Download a new model
+    async function downloadModel() {
+      const modelName = prompt("Enter model name to download:");
+      if (!modelName) return;
+      try {
+        const res = await fetch(`${API_BASE}/models/download`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: modelName })
+        });
+        const data = await res.json();
+        alert("Download started: " + JSON.stringify(data));
+      } catch (err) {
+        alert("Error downloading model: " + err);
+      }
+    }
+
+    // ✅ Delete models with confirmation popup
+    function openDeleteModal() {
+      const overlay = document.getElementById("modalOverlay");
+      const list = document.getElementById("modelList");
+      list.innerHTML = "";
+
+      if (modelsCache.length === 0) {
+        alert("No models available to delete.");
+        return;
+      }
+
+      modelsCache.forEach(m => {
+        const li = document.createElement("li");
+        li.innerHTML = `<label><input type="checkbox" value="${m.name}"> ${m.name}</label>`;
+        list.appendChild(li);
+      });
+
+      overlay.style.display = "flex";
+    }
+
+    async function confirmDelete() {
+      const selected = Array.from(document.querySelectorAll("#modelList input:checked"))
+        .map(cb => cb.value);
+
+      if (selected.length === 0) {
+        alert("No models selected.");
+        return;
+      }
+
+      if (!confirm("Are you sure you want to delete: " + selected.join(", ") + "?")) {
+        return;
+      }
+
+      try {
+        const resp = await fetch(`${API_BASE}/models/delete`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ models: selected })
+        });
+        const result = await resp.json();
+        alert("Delete result: " + JSON.stringify(result));
+        closeDeleteModal();
+        loadModels();
+      } catch (err) {
+        alert("Error deleting models: " + err);
+      }
+    }
+
+    function closeDeleteModal() {
+      document.getElementById("modalOverlay").style.display = "none";
+    }
+
+    // ✅ Chat function
     function sendPrompt() {
       const promptInput = document.getElementById("promptInput");
       const chatWindow = document.getElementById("chatWindow");
       const prompt = promptInput.value.trim();
       if (!prompt) return;
 
-      // Add user message
       addMessage(prompt, "user");
 
-      // Create bot message placeholder
       const botMessage = document.createElement("div");
       botMessage.className = "message bot";
       chatWindow.appendChild(botMessage);
       chatWindow.scrollTop = chatWindow.scrollHeight;
 
-      // const source = new EventSource(`http://backend:9000/chat?prompt=${encodeURIComponent(prompt)}`);
-      const source = new EventSource(`http://localhost:9000/chat?prompt=${encodeURIComponent(prompt)}`);
+      const source = new EventSource(
+        `${API_BASE}/chat?prompt=${encodeURIComponent(prompt)}&session_id=${sessionId}&model=${encodeURIComponent(currentModel)}`
+      );
+
       let accumulatedText = "";
-
       source.onmessage = function (event) {
-        // ✅ Unescape newlines
-        const unescapedData = event.data.replace(/\\n/g, '\n');
-        accumulatedText += unescapedData;
-
-        const formatted = markdownToHTML(accumulatedText);
-        const safeHTML = DOMPurify.sanitize(formatted);
-
-        botMessage.innerHTML = safeHTML;
+        const unescaped = event.data.replace(/\\n/g, '\n');
+        accumulatedText += unescaped;
+        const formatted = DOMPurify.sanitize(marked.parse(accumulatedText));
+        botMessage.innerHTML = formatted;
         chatWindow.scrollTop = chatWindow.scrollHeight;
       };
-
       source.onerror = function () {
         source.close();
       };
@@ -133,6 +284,25 @@
       chatWindow.appendChild(message);
       chatWindow.scrollTop = chatWindow.scrollHeight;
     }
+
+    // ✅ Event listeners
+    document.getElementById("promptInput").addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendPrompt();
+      }
+    });
+    document.getElementById("refreshModels").addEventListener("click", loadModels);
+    document.getElementById("downloadModel").addEventListener("click", downloadModel);
+    document.getElementById("deleteModels").addEventListener("click", openDeleteModal);
+    document.getElementById("confirmDelete").addEventListener("click", confirmDelete);
+    document.getElementById("cancelDelete").addEventListener("click", closeDeleteModal);
+    document.getElementById("modelDropdown").addEventListener("change", (e) => {
+      currentModel = e.target.value;
+    });
+
+    // ✅ Load models at startup
+    loadModels();
   </script>
 </body>
 </html>
