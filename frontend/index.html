@@ -226,10 +226,17 @@
 
       try {
         const resp = await fetch(`${API_BASE}/models/delete`, {
-          method: "DELETE",
+          method: "POST",   // ✅ always use POST
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ models: selected })
         });
+
+        if (!resp.ok) {
+          const err = await resp.json();
+          alert("Delete failed: " + JSON.stringify(err));
+          return;
+        }
+
         const result = await resp.json();
         alert("Delete result: " + JSON.stringify(result));
         closeDeleteModal();

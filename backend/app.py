@@ -111,7 +111,7 @@ async def pull_model(model_name: str) -> dict:
                 print(f"❌ Exception during model pull: {e}")
 
             # Wait before checking
-            await asyncio.sleep(60)
+            await asyncio.sleep(600)
 
             try:
                 resp_tags = await client.get(f"{OLLAMA_URL}/api/tags")
@@ -152,18 +152,23 @@ async def list_models():
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-@app.delete("/models/delete")
+@app.post("/models/delete")
 async def delete_models(body: dict = Body(...)):
     models = body.get("models", [])
     if not models:
-        return {"status": "error", "detail": "No models provided"}
+        raise HTTPException(status_code=400, detail="No models provided")
 
     deleted = []
     errors = []
     async with httpx.AsyncClient() as client:
         for model_name in models:
             try:
-                resp = await client.delete(f"{OLLAMA_URL}/api/delete", json={"name": model_name})
+                resp = await client.request(
+                    "DELETE",
+                    f"{OLLAMA_URL}/api/delete",
+                    content=json.dumps({"name": model_name}),
+                    headers={"Content-Type": "application/json"}
+                )
                 if resp.status_code == 200:
                     deleted.append(model_name)
                 else:
@@ -171,4 +176,6 @@ async def delete_models(body: dict = Body(...)):
             except Exception as e:
                 errors.append({"model": model_name, "error": str(e)})
 
-    return {"status": "ok", "deleted": deleted, "errors": errors}
+    return {"deleted": deleted, "errors": errors}
+
+
