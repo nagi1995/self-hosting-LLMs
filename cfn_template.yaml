@@ -26,7 +26,9 @@ Parameters:
 
 Resources:
 
-  #### Security Groups
+  ############################
+  # Security Groups
+  ############################
   BackendSG:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -55,7 +57,9 @@ Resources:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
 
-  #### ECS Clusters
+  ############################
+  # ECS Clusters
+  ############################
   BackendCluster:
     Type: AWS::ECS::Cluster
     Properties:
@@ -66,7 +70,9 @@ Resources:
     Properties:
       ClusterName: !Sub "ollama-cluster-${AWS::StackName}"
 
-  #### IAM Roles
+  ############################
+  # IAM Roles
+  ############################
   FargateExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -76,8 +82,7 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service:
-                - ecs-tasks.amazonaws.com
+              Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
@@ -114,18 +119,112 @@ Resources:
     Properties:
       Roles: [!Ref Ec2InstanceRole]
 
-  #### CloudWatch Log Group for Backend
+  ############################
+  # CloudWatch Log Group
+  ############################
   BackendLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/ecs/be-${AWS::StackName}"
       RetentionInDays: 1
 
-  #### Backend Fargate Task Definition
+  ############################
+  # Ollama ENI
+  ############################
+  OllamaENI:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Select [0, !Ref SubnetIds]
+      Description: "ENI for Ollama instance (private-only)"
+      GroupSet:
+        - !Ref OllamaSG
+      Tags:
+        - Key: Name
+          Value: !Sub "ollama-eni-${AWS::StackName}"
+
+  ############################
+  # Ollama EC2 Instance
+  ############################
+  OllamaInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: OllamaENI
+    Properties:
+      InstanceType: c6i.large
+      IamInstanceProfile: !Ref Ec2InstanceProfile
+      ImageId: ami-099e6eee4720726e1   # replace with latest AL2 in your region
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref OllamaENI
+          DeviceIndex: 0
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Sub "ollama-instance-${AWS::StackName}"
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          # Join ECS cluster
+          echo "ECS_CLUSTER=${OllamaCluster}" >> /etc/ecs/ecs.config
+          yum update -y
+          amazon-linux-extras enable docker
+          yum install -y docker jq
+          systemctl enable docker
+          systemctl start docker
+          mkdir -p /var/lib/ollama
+          chown -R ec2-user:ec2-user /var/lib/ollama
+
+  ############################
+  # Ollama ECS Task & Service (EC2)
+  ############################
+  OllamaTaskDef:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "ollama-task-${AWS::StackName}"
+      Cpu: "2048"
+      Memory: "3500"
+      RequiresCompatibilities: [EC2]
+      NetworkMode: host
+      ExecutionRoleArn: !GetAtt FargateExecutionRole.Arn
+      TaskRoleArn: !Ref FargateTaskRole
+      ContainerDefinitions:
+        - Name: ollama
+          Image: ollama/ollama:latest
+          Essential: true
+          PortMappings:
+            - ContainerPort: 11434
+              Protocol: tcp
+          Environment:
+            - Name: OLLAMA_NUM_PARALLEL
+              Value: "4"
+            - Name: OLLAMA_MAX_LOADED_MODELS
+              Value: "2"
+          MountPoints:
+            - ContainerPath: /root/.ollama
+              SourceVolume: OllamaData
+      Volumes:
+        - Name: OllamaData
+          Host:
+            SourcePath: /var/lib/ollama
+
+  OllamaService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref OllamaCluster
+      LaunchType: EC2
+      DesiredCount: 1
+      TaskDefinition: !Ref OllamaTaskDef
+
+  ############################
+  # Backend Fargate Task & Service
+  ############################
   BackendTaskDef:
     Type: AWS::ECS::TaskDefinition
     DependsOn: 
-      - OllamaENI   # ensures Ollama ENI is created before the BE task
+      - OllamaENI
       - BackendLogGroup
     Properties:
       Family: !Sub "be-task-${AWS::StackName}"
@@ -155,7 +254,6 @@ Resources:
               awslogs-region: !Ref "AWS::Region"
               awslogs-stream-prefix: ecs
 
-  #### Backend ECS Service (Fargate)
   BackendService:
     Type: AWS::ECS::Service
     DependsOn: BackendTaskDef
@@ -170,76 +268,6 @@ Resources:
           Subnets: !Ref SubnetIds
           SecurityGroups:
             - !Ref BackendSG
-
-  #### Ollama ENI with auto private IP
-  OllamaENI:
-    Type: AWS::EC2::NetworkInterface
-    Properties:
-      SubnetId: !Select [0, !Ref SubnetIds]
-      Description: "ENI for Ollama instance (private-only)"
-      GroupSet:
-        - !Ref OllamaSG
-      Tags:
-        - Key: Name
-          Value: !Sub "ollama-eni-${AWS::StackName}"
-
-  #### Ollama EC2 instance
-  OllamaInstance:
-    Type: AWS::EC2::Instance
-    DependsOn: OllamaENI
-    Properties:
-      InstanceType: c6i.large
-      IamInstanceProfile: !Ref Ec2InstanceProfile
-      ImageId: ami-099e6eee4720726e1   # replace with latest Amazon Linux 2 AMI in your region
-      NetworkInterfaces:
-        - NetworkInterfaceId: !Ref OllamaENI
-          DeviceIndex: 0
-      BlockDeviceMappings:
-        - DeviceName: /dev/xvda
-          Ebs:
-            VolumeSize: 30
-            VolumeType: gp3
-            DeleteOnTermination: true
-      Tags:
-        - Key: Name
-          Value: !Sub "ollama-instance-${AWS::StackName}"
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash -xe
-          # Register ECS cluster
-          echo "ECS_CLUSTER=${OllamaCluster}" >> /etc/ecs/ecs.config
-
-          # Update system
-          yum update -y
-
-          # Install Docker robustly
-          amazon-linux-extras enable docker
-          yum install -y docker jq
-          systemctl enable docker
-          systemctl start docker
-
-          # Wait for Docker to be fully running
-          until docker info > /dev/null 2>&1; do
-            echo "Waiting for Docker to start..."
-            sleep 3
-          done
-
-          # Prepare Ollama directory
-          mkdir -p /var/lib/ollama
-          chown -R ec2-user:ec2-user /var/lib/ollama
-
-          # Pull Ollama image and run container
-          docker pull ollama/ollama:latest
-          docker rm -f ollama || true
-          docker run -d --name ollama \
-            -p 11434:11434 \
-            -e OLLAMA_NUM_PARALLEL=4 \
-            -e OLLAMA_MAX_LOADED_MODELS=2 \
-            -v /var/lib/ollama:/root/.ollama \
-            ollama/ollama:latest
-
-          # Verify container is running
-          docker ps
 
 Outputs:
   BackendServiceName:
@@ -257,6 +285,5 @@ Outputs:
   OllamaInstanceId:
     Description: "EC2 Instance ID running Ollama"
     Value: !Ref OllamaInstance
-
 
 
