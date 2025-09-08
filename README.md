@@ -11,7 +11,12 @@ Minimal stack for running Large Language Models locally (or in AWS) using:
 
 ---
 
-# [Demo Video](https://vimeo.com/1116522339) on [Vimeo](https://vimeo.com/)
+## ▶️ Sample Demo
+
+https://github.com/user-attachments/assets/9b3cc582-8e18-4c5c-b083-37dcc3039e55
+
+
+## [Full Demo Video](https://vimeo.com/1116522339) is available on [Vimeo](https://vimeo.com/)
 
 ---
 
@@ -138,6 +143,7 @@ aws cloudformation deploy \
    ```
 2. Open the HTML file in a browser.
 3. Choose a model, type a prompt, hit **Send**. Streaming markdown output will render live.
+
 
 ---
 
