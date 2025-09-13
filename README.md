@@ -11,6 +11,10 @@ Minimal stack for running Large Language Models locally (or in AWS) using:
 
 ---
 
+# [Link](https://binginagesh.medium.com/ollama-in-the-wild-building-a-chat-app-locally-and-taking-it-to-the-cloud-2bec8af57049) to [medium](https://medium.com/) blog
+
+---
+
 ## ▶️ Sample Demo
 
 https://github.com/user-attachments/assets/9b3cc582-8e18-4c5c-b083-37dcc3039e55
